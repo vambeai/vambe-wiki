@@ -1,12 +1,33 @@
 ARG APP_PATH=/opt/outline
-ARG BASE_IMAGE=outlinewiki/outline-base
-FROM ${BASE_IMAGE} AS base
+
+# Builds the application from the source in this repository. Railway builds a
+# single Dockerfile, so this stage inlines Dockerfile.base instead of pulling
+# the prebuilt outlinewiki/outline-base image, which upstream no longer updates.
+# The Node.js version must match the runner stage below.
+FROM node:26.3.0 AS base
 
 ARG APP_PATH
 WORKDIR $APP_PATH
+COPY ./package.json ./yarn.lock ./.yarnrc.yml ./
+COPY ./patches ./patches
+
+RUN apt-get update && apt-get install -y cmake
+ENV NODE_OPTIONS="--max-old-space-size=24000"
+
+RUN npm install -g corepack
+RUN corepack enable
+RUN yarn install --immutable --network-timeout 1000000 && \
+  yarn cache clean
+
+COPY . .
+ARG CDN_URL
+RUN yarn build
+
+RUN yarn workspaces focus --production && \
+  yarn cache clean
 
 # ---
-FROM node:22-slim AS runner
+FROM node:26.3.0-slim AS runner
 
 LABEL org.opencontainers.image.source="https://github.com/outline/outline"
 

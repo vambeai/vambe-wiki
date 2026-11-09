@@ -11,7 +11,7 @@ on:
 jobs:
   close-translation-prs:
     if: github.event.pull_request.user.login != 'outline-translations'
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-vambe
     permissions:
       pull-requests: write
 

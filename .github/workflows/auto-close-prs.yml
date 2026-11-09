@@ -6,7 +6,7 @@ on:
 
 jobs:
   close-unsigned-prs:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-vambe
     permissions:
       pull-requests: write
       issues: write

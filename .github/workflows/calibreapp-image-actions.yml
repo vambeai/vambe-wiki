@@ -32,7 +32,7 @@ jobs:
       pull-requests: write #  to comment on pull request
 
     name: calibreapp/image-actions
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-vambe
     # Only run on main repo on and PRs that match the main repo.
     if: |
       github.repository == 'outline/outline' &&

@@ -32,7 +32,7 @@ jobs:
       pull-requests: write #  to comment on pull request
 
     name: calibreapp/image-actions
-    runs-on: namespace-profile-small
+    runs-on: namespace-profile-small;github.run-id=${{ github.run_id }}
     # Only run on main repo on and PRs that match the main repo.
     if: |
       github.repository == 'outline/outline' &&

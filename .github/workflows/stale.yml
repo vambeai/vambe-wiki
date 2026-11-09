@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   stale:
-    runs-on: namespace-profile-minimal
+    runs-on: namespace-profile-minimal;github.run-id=${{ github.run_id }}
     steps:
       - uses: actions/stale@v10
         id: stale

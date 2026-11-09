@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   update-node:
-    runs-on: namespace-profile-vambe
+    runs-on: namespace-profile-small
     steps:
       - name: Checkout
         uses: actions/checkout@v5

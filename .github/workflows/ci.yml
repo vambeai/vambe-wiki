@@ -73,7 +73,7 @@ jobs:
   actionlint:
     needs: changes
     if: ${{ needs.changes.outputs.config == 'true' }}
-    runs-on: namespace-profile-vambe
+    runs-on: namespace-profile-small
     steps:
       - uses: actions/checkout@v5
       - uses: docker://rhysd/actionlint:1.7.12
@@ -160,7 +160,7 @@ jobs:
   ci:
     needs: [changes, lint, actionlint, types, test, test-server, bundle-size]
     if: always()
-    runs-on: namespace-profile-vambe
+    runs-on: namespace-profile-minimal
     steps:
       - name: Check job results
         if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}

@@ -3,7 +3,7 @@ import fractionalIndex from "fractional-index";
 import fs from "fs-extra";
 import invariant from "invariant";
 import contentDisposition from "content-disposition";
-import Router from "koa-router";
+import Router from "@koa/router";
 import { escapeRegExp, has, remove, uniq } from "es-toolkit/compat";
 import mime from "mime-types";
 import type { Order, ScopeOptions, WhereOptions } from "sequelize";
@@ -13,15 +13,14 @@ import { randomUUID } from "node:crypto";
 import type { DirectionFilter, SortFilter } from "@shared/types";
 import { type NavigationNode } from "@shared/types";
 import {
+  DocumentPermission,
   ExportContentType,
   FileOperationFormat,
-  FileOperationState,
-  FileOperationType,
   StatusFilter,
   UserRole,
 } from "@shared/types";
 import { subtractDate } from "@shared/utils/date";
-import slugify from "@shared/utils/slugify";
+import slugify from "@server/utils/slugify";
 import { Day } from "@shared/utils/time";
 import documentCreator, {
   authorizeDocumentCreate,
@@ -299,12 +298,13 @@ router.post(
     // Sort=index needs the collection's documentStructure for ordering and
     // pagination. Only meaningful when the filter targets a single collection.
     let documentIds: string[] = [];
+    let collection: Collection | null | undefined;
     const explicitCollectionId =
       filter !== undefined
         ? extractTopLevelEqValue(filter, "collectionId")
         : undefined;
     if (explicitCollectionId && sort === "index") {
-      const collection = await Collection.findByPk(explicitCollectionId, {
+      collection = await Collection.findByPk(explicitCollectionId, {
         userId: user.id,
         includeDocumentStructure: true,
       });
@@ -319,7 +319,9 @@ router.post(
     // public-API `documentId` field is renamed to the underlying `id` column;
     // `userId` is handled inside `buildWhere` (maps to `collaboratorIds`).
     if (filter) {
-      await authorizeFilterFields(user, filter);
+      await authorizeFilterFields(user, filter, {
+        collections: collection ? [collection] : undefined,
+      });
       const mapped = mapFilterFields(filter, { documentId: "id" });
       where[Op.and].push(buildWhere<Document>(mapped));
     }
@@ -452,10 +454,13 @@ router.post(
             documentIds,
           },
         }),
+      // The membership includes are LEFT JOINs that never filter rows, so
+      // the total can be counted without them.
       () =>
-        Document.withMembershipScope(user.id, { includeDrafts }).count({
-          where,
-        })
+        (includeDrafts
+          ? Document.unscoped()
+          : Document.scope("defaultScope")
+        ).count({ where })
     );
 
     const data = await presentDocuments(ctx, documents);
@@ -606,30 +611,30 @@ router.post(
   async (ctx: APIContext<T.DocumentsViewedReq>) => {
     const { sort, direction } = ctx.input.body;
     const { user } = ctx.state.auth;
-    const collectionIds = await user.collectionIds();
-    const userId = user.id;
-    const views = await View.findAll({
-      where: {
-        userId,
-      },
-      order: [[sort, direction]],
-      include: [
-        {
-          model: Document.scope([
-            "withDrafts",
-            { method: ["withMembership", userId] },
-          ]),
-          required: true,
-          where: {
-            teamId: user.teamId,
-            collectionId: collectionIds,
-          },
-        },
-      ],
+    const viewIds = await View.findAccessibleIds(user, {
+      sort,
+      direction,
       offset: ctx.state.pagination.offset,
       limit: ctx.state.pagination.limit,
-      subQuery: false,
     });
+    const views = viewIds.length
+      ? await View.findAll({
+          where: {
+            id: viewIds,
+          },
+          order: [[sort, direction]],
+          include: [
+            {
+              model: Document.scope([
+                "withDrafts",
+                "withoutStateOrText",
+                { method: ["withMembership", user.id] },
+              ]),
+              required: true,
+            },
+          ],
+        })
+      : [];
     const documents = views.map((view) => {
       const document = view.document;
       document.views = [view];
@@ -711,15 +716,15 @@ router.post(
     const { id, shareId } = ctx.input.body;
     const { user } = ctx.state.auth;
     const apiVersion = getAPIVersion(ctx);
-    const teamFromCtx = await getTeamFromContext(ctx, {
-      includeOAuthState: false,
-    });
 
     let document: Document | null;
     let serializedDocument: Record<string, unknown> | undefined;
     let isPublic = false;
 
     if (shareId) {
+      const teamFromCtx = await getTeamFromContext(ctx, {
+        includeOAuthState: false,
+      });
       const result = await loadPublicShare({
         id: shareId,
         documentId: id,
@@ -732,25 +737,27 @@ router.post(
         throw NotFoundError("Document could not be found for shareId");
       }
 
-      // reload with membership scope if user is authenticated
-      if (user) {
-        document = await Document.findByPk(document.id, {
-          userId: user.id,
-          rejectOnEmpty: true,
-        });
-      }
+      const { sharedTree } = result;
+      const [scopedDocument, backlinkIds] = await Promise.all([
+        // reload with membership scope if user is authenticated
+        user
+          ? Document.findByPk(document.id, {
+              userId: user.id,
+              rejectOnEmpty: true,
+            })
+          : document,
+
+        // Get backlinks that are within the shared tree
+        sharedTree
+          ? Relationship.findSourceDocumentIdsInSharedTree(
+              document.id,
+              getAllIdsInSharedTree(sharedTree)
+            )
+          : undefined,
+      ]);
+      document = scopedDocument;
 
       isPublic = cannot(user, "read", document);
-
-      // Get backlinks that are within the shared tree
-      let backlinkIds: string[] | undefined;
-      if (result.sharedTree) {
-        const allowedDocumentIds = getAllIdsInSharedTree(result.sharedTree);
-        backlinkIds = await Relationship.findSourceDocumentIdsInSharedTree(
-          document.id,
-          allowedDocumentIds
-        );
-      }
 
       serializedDocument = await presentDocument(ctx, document, {
         isPublic,
@@ -895,7 +902,6 @@ router.post(
       () =>
         User.count({
           where,
-          // @ts-expect-error Types are incorrect for count
           replacements,
         }) as unknown as Promise<number>
     );
@@ -983,24 +989,10 @@ router.post(
         );
       }
 
-      const fileOperation = await FileOperation.createWithCtx(ctx, {
-        type: FileOperationType.Export,
-        state: FileOperationState.Creating,
+      const fileOperation = await FileOperation.createExport(ctx, {
+        document,
         format,
-        key: FileOperation.getExportKey({
-          name: document.titleWithDefault,
-          teamId: document.teamId,
-          format,
-        }),
-        url: null,
-        size: 0,
-        documentId: document.id,
-        userId: user.id,
-        teamId: document.teamId,
       });
-
-      fileOperation.user = user;
-      fileOperation.document = document;
 
       ctx.body = {
         success: true,
@@ -1046,7 +1038,7 @@ router.post(
     const extension =
       contentType === "text/markdown" ? "md" : mime.extension(contentType);
 
-    const fileName = slugify(document.titleWithDefault);
+    const fileName = slugify(document.displayTitle);
     const attachmentIds = ProsemirrorHelper.parseAttachmentIds(
       DocumentHelper.toProsemirror(document)
     );
@@ -1169,9 +1161,9 @@ router.post(
     const document = await Document.findByPk(id, {
       userId: user.id,
       paranoid: false,
-      rejectOnEmpty: true,
       transaction,
     });
+    authorize(user, "read", document);
 
     await documentRestorer(ctx, { document, collectionId, revisionId });
 
@@ -1278,28 +1270,14 @@ router.post(
       });
 
       share = result.share;
-      let { collection, document } = result; // One of collection or document should be available
-
-      // reload with membership scope if user is authenticated
-      if (user) {
-        collection = collection
-          ? await Collection.findByPk(collection.id, { userId: user.id })
-          : null;
-        document = document
-          ? await Document.findByPk(document.id, { userId: user.id })
-          : null;
-      }
-
-      isPublic = collection
-        ? cannot(user, "read", collection)
-        : cannot(user, "read", document);
+      const { collection, document } = result; // One of collection or document should be available
 
       if (share.documentId && !share?.includeChildDocuments) {
         throw InvalidRequestError("Child documents cannot be searched");
       }
 
       teamId = share.teamId;
-      const team = await share.$get("team");
+      const team = share.team;
       invariant(team, "Share must belong to a team");
 
       const shareScopeId = collection?.id || document?.collectionId;
@@ -1315,9 +1293,23 @@ router.post(
             ]
           : []),
       ]);
-      const resolvedShareFilter = shareFilter
-        ? await expandDocumentIdLeaves(shareFilter, { teamId: share.teamId })
-        : undefined;
+      const [resolvedShareFilter, scopedCollection, scopedDocument] =
+        await Promise.all([
+          shareFilter
+            ? expandDocumentIdLeaves(shareFilter, { teamId: share.teamId })
+            : undefined,
+          // reload with membership scope if user is authenticated
+          user && collection
+            ? Collection.findByPk(collection.id, { userId: user.id })
+            : collection,
+          user && document
+            ? Document.findByPk(document.id, { userId: user.id })
+            : document,
+        ]);
+
+      isPublic = scopedCollection
+        ? cannot(user, "read", scopedCollection)
+        : cannot(user, "read", scopedDocument);
 
       response = await SearchProviderManager.getProvider().searchForTeam(team, {
         query,
@@ -1361,33 +1353,34 @@ router.post(
     const { results, total } = response;
     const documents = results.map((result) => result.document);
 
-    const data = await Promise.all(
-      results.map(async (result) => {
-        const document = await presentDocument(ctx, result.document, {
-          isPublic,
-          shareId,
-        });
-        return { ...result, document };
-      })
-    );
+    const [data] = await Promise.all([
+      Promise.all(
+        results.map(async (result) => {
+          const document = await presentDocument(ctx, result.document, {
+            isPublic,
+            shareId,
+          });
+          return { ...result, document };
+        })
+      ),
 
-    // When requesting subsequent pages of search results we don't want to record
-    // duplicate search query records
-    if (query && offset === 0) {
-      const duration = Date.now() - searchStartedAt;
-      await SearchQuery.record({
-        userId: user?.id,
-        teamId,
-        shareId: share?.id,
-        // auth.type values are a subset of search sources; unauthenticated share searches default to "app"
-        source:
-          (ctx.state.auth.type as unknown as SearchQuerySource) ||
-          SearchQuerySource.App,
-        query,
-        results: total,
-        duration,
-      });
-    }
+      // When requesting subsequent pages of search results we don't want to record
+      // duplicate search query records
+      query && offset === 0
+        ? SearchQuery.record({
+            userId: user?.id,
+            teamId,
+            shareId: share?.id,
+            // auth.type values are a subset of search sources; unauthenticated share searches default to "app"
+            source:
+              (ctx.state.auth.type as unknown as SearchQuerySource) ||
+              SearchQuerySource.App,
+            query,
+            results: total,
+            duration: Date.now() - searchStartedAt,
+          })
+        : undefined,
+    ]);
 
     ctx.body = {
       pagination: { ...ctx.state.pagination, total },
@@ -1455,6 +1448,7 @@ router.post(
 router.post(
   "documents.update",
   auth(),
+  rateLimiter(RateLimiterStrategy.OneHundredPerMinute),
   validate(T.DocumentsUpdateSchema),
   transaction(),
   async (ctx: APIContext<T.DocumentsUpdateReq>) => {
@@ -1494,6 +1488,14 @@ router.post(
 
     if (publish) {
       await authorizeDocumentPublish(ctx, document, collectionId);
+    }
+
+    if (input.templateId && input.templateId !== document.templateId) {
+      const template = await Template.findByPk(input.templateId, {
+        userId: user.id,
+        transaction,
+      });
+      authorize(user, "read", template);
     }
 
     document = await documentUpdater(ctx, {
@@ -1956,14 +1958,10 @@ router.post(
       UserMemberships.length ? UserMemberships[0].index : null
     );
 
-    let membership = await UserMembership.findOne({
-      where: {
-        documentId: id,
-        userId,
-      },
-      lock: transaction.LOCK.UPDATE,
-      ...ctx.context,
-    });
+    let membership = await UserMembership.findOneForUpdate(
+      { documentId: id, userId },
+      { transaction }
+    );
 
     if (membership) {
       if (permission) {
@@ -2071,14 +2069,10 @@ router.post(
     authorize(user, "manageUsers", document);
     authorize(user, "read", group);
 
-    let membership = await GroupMembership.findOne({
-      where: {
-        documentId: id,
-        groupId,
-      },
-      lock: transaction.LOCK.UPDATE,
-      ...ctx.context,
-    });
+    let membership = await GroupMembership.findOneForUpdate(
+      { documentId: id, groupId },
+      { transaction }
+    );
 
     if (membership) {
       if (permission) {
@@ -2092,7 +2086,7 @@ router.post(
         {
           documentId: id,
           groupId,
-          permission: permission || user.defaultDocumentPermission,
+          permission: permission ?? DocumentPermission.ReadWrite,
           createdById: user.id,
         },
         ctx.context

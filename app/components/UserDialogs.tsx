@@ -58,14 +58,20 @@ export function UserChangeRoleDialog({
   return (
     <ConfirmationDialog onSubmit={handleSubmit} savingText={`${t("Saving")}…`}>
       {users.length === 1
-        ? t("Are you sure you want to make {{ userName }} a {{ role }}?", {
-            role,
-            userName: users[0].name,
-          })
-        : t("Are you sure you want to make {{ count }} user a {{ role }}?", {
-            role,
-            count: users.length,
-          })}{" "}
+        ? t(
+            "Are you sure you want to change the role of {{ userName }} to {{ role }}?",
+            {
+              role,
+              userName: users[0].name,
+            }
+          )
+        : t(
+            "Are you sure you want to change the role of {{ count }} user to {{ role }}?",
+            {
+              role,
+              count: users.length,
+            }
+          )}{" "}
       {accessNote}
     </ConfirmationDialog>
   );
@@ -160,7 +166,7 @@ export function UserChangeNameDialog({ user, onSubmit }: Props) {
         name="name"
         label={t("New name")}
         onChange={handleChange}
-        error={!name ? t("Name can't be empty") : undefined}
+        error={!name ? t("Name can’t be empty") : undefined}
         value={name}
         maxLength={UserValidation.maxNameLength}
         showCharacterCount
@@ -265,7 +271,7 @@ export function UserChangeEmailDialog({ user, onSubmit }: Props) {
         name="email"
         label={t("New email")}
         onChange={handleChange}
-        error={!email ? t("Email can't be empty") : error}
+        error={!email ? t("Email can’t be empty") : error}
         value={email}
         maxLength={UserValidation.maxEmailLength}
         showCharacterCount

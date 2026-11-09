@@ -153,9 +153,9 @@ const LinkEditor: React.FC<Props> = ({
         if (selectedIndex >= 0 && results[selectedIndex]) {
           const selectedDoc = results[selectedIndex];
           if (!mark) {
-            addLink(selectedDoc.url);
+            addLink(selectedDoc.path);
           } else {
-            updateLink(selectedDoc.url);
+            updateLink(selectedDoc.path);
           }
         } else if (!trimmedQuery) {
           removeLink();
@@ -180,8 +180,11 @@ const LinkEditor: React.FC<Props> = ({
     }
   };
 
-  const handleSearch = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSearch = (event: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = event.target.value;
+    if (newValue === query) {
+      return;
+    }
     setQuery(newValue);
     setSelectedIndex(-1);
   };

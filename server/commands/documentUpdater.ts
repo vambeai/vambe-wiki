@@ -75,32 +75,20 @@ export default async function documentUpdater(
   const { transaction } = ctx.state;
   const cId = collectionId || document.collectionId;
 
-  if (title !== undefined) {
-    document.title = title.trim();
-  }
-  if (icon !== undefined) {
-    document.icon = icon;
-  }
-  if (color !== undefined) {
-    document.color = color;
-  }
-  if (editorVersion) {
-    document.editorVersion = editorVersion;
-  }
-  if (templateId) {
-    document.templateId = templateId;
-  }
-  if (fullWidth !== undefined) {
-    document.fullWidth = fullWidth;
-  }
+  document.fill({
+    title: title?.trim(),
+    icon,
+    color,
+    editorVersion: editorVersion || undefined,
+    templateId: templateId || undefined,
+    fullWidth,
+    insightsEnabled,
+  });
   if (preferences) {
     document.preferences = {
       ...document.preferences,
       ...preferences,
     };
-  }
-  if (insightsEnabled !== undefined) {
-    document.insightsEnabled = insightsEnabled;
   }
   if (text !== undefined) {
     document = DocumentHelper.applyMarkdownToDocument(
@@ -109,7 +97,8 @@ export default async function documentUpdater(
         base64Only: true,
       }),
       editMode,
-      findText
+      findText,
+      user.id
     );
   }
 
@@ -150,6 +139,7 @@ export default async function documentUpdater(
 
   const changed = document.changed();
   const eventData = done !== undefined ? { done } : undefined;
+  const { collection } = document;
 
   const event = {
     name: "documents.update",
@@ -175,9 +165,16 @@ export default async function documentUpdater(
     });
   }
 
-  return await Document.findByPk(document.id, {
-    userId: user.id,
-    rejectOnEmpty: true,
-    transaction,
-  });
+  // Publishing can move the document to another collection, and the save
+  // hooks can attach a collection that has no membership data. Reload in
+  // those cases so that policies stay accurate.
+  if (publish || document.collection !== collection) {
+    return await Document.findByPk(document.id, {
+      userId: user.id,
+      rejectOnEmpty: true,
+      transaction,
+    });
+  }
+
+  return document;
 }

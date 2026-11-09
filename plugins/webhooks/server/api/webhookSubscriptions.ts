@@ -1,4 +1,4 @@
-import Router from "koa-router";
+import Router from "@koa/router";
 import { compact, isEmpty } from "es-toolkit/compat";
 import { Op, Sequelize, type WhereOptions } from "sequelize";
 import { UserRole } from "@shared/types";
@@ -65,7 +65,6 @@ router.post(
       () =>
         WebhookSubscription.count({
           where,
-          // @ts-expect-error Types are incorrect for count
           replacements,
         }) as unknown as Promise<number>
     );
@@ -128,7 +127,9 @@ router.post(
 
     authorize(user, "delete", webhookSubscription);
 
-    await webhookSubscription.destroyWithCtx(ctx);
+    await webhookSubscription.destroyWithCtx(ctx, {
+      data: { name: webhookSubscription.name },
+    });
 
     ctx.body = {
       success: true,
@@ -157,13 +158,17 @@ router.post(
 
     authorize(user, "update", webhookSubscription);
 
-    await webhookSubscription.updateWithCtx(ctx, {
-      name,
-      url,
-      events: compact(events),
-      enabled: true,
-      secret: isEmpty(secret) ? undefined : secret,
-    });
+    await webhookSubscription.updateWithCtx(
+      ctx,
+      {
+        name,
+        url,
+        events: compact(events),
+        enabled: true,
+        secret: secret === "" ? null : secret,
+      },
+      { data: { name } }
+    );
 
     ctx.body = {
       data: presentWebhookSubscription(webhookSubscription),

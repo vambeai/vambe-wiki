@@ -4,3 +4,5 @@ self-hosted-runner:
     - blacksmith-8vcpu-ubuntu-2404
     - blacksmith-8vcpu-ubuntu-2404-arm
     - namespace-profile-vambe
+    - namespace-profile-minimal
+    - namespace-profile-small

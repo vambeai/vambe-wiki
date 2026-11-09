@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   stale:
-    runs-on: namespace-profile-vambe
+    runs-on: namespace-profile-minimal
     steps:
       - uses: actions/stale@v10
         id: stale
